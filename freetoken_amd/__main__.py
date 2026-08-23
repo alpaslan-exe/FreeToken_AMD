@@ -14,6 +14,7 @@ from .config import Settings
 from .gguf import human, read_gguf
 from .hw import describe, probe
 from .plan import candidate_n_cpu_moe, make_plan
+from .report import render
 from .serve import load_best, serve, systemd_unit
 from .server import ServerConfig
 
@@ -130,6 +131,11 @@ def cmd_serve(args) -> int:
     return serve(s, cfg, os.path.join(s.results_dir, "serve.log"))
 
 
+def cmd_report(args) -> int:
+    print(render(args.results, args.top))
+    return 0
+
+
 def cmd_systemd(args) -> int:
     s = _settings(args)
     cfg = load_best(args.from_results) if args.from_results else ServerConfig(label="manual", args=args.extra)
@@ -171,6 +177,11 @@ def main(argv=None) -> int:
     sp.add_argument("--from-results", help="bench JSON to pick the best config from")
     sp.add_argument("extra", nargs=argparse.REMAINDER)
     sp.set_defaults(fn=cmd_serve)
+
+    sp = sub.add_parser("report", help="render a bench JSON as a Markdown table")
+    sp.add_argument("results")
+    sp.add_argument("--top", type=int)
+    sp.set_defaults(fn=cmd_report)
 
     sp = sub.add_parser("systemd", parents=[common], help="print a systemd unit for the chosen config (not installed)")
     sp.add_argument("--from-results")
