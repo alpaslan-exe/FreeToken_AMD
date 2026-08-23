@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "freetoken-amd"
+version = "0.1.0"
+description = "FreeToken-style edge MoE serving on AMD GPUs via llama.cpp/Vulkan: expert placement planner, benchmark grid, server launcher"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+dependencies = []
+classifiers = ["Programming Language :: Python :: 3", "License :: OSI Approved :: Apache Software License", "Operating System :: POSIX :: Linux"]
+
+[project.scripts]
+freetoken-amd = "freetoken_amd.__main__:main"
+
+[tool.setuptools]
+packages = ["freetoken_amd"]
