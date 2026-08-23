@@ -114,3 +114,41 @@ def override_tensor_regex(layers_on_gpu: list[int], parts: tuple[str, ...] = ("f
         return ""
     alt = "|".join(str(l) for l in sorted(layers_on_gpu))
     return rf"blk\.({alt})\.ffn_(up|gate|down)_exps\.weight=Vulkan0"
+
+
+def calibrate(results_path: str) -> dict | None:
+    """Learn real GPU bytes from a bench JSON: fixed part + per expert layer.
+
+    `gpu_model_mib` from the log is what the GPU actually holds for each
+    --n-cpu-moe N. A linear fit over N gives the true non-expert footprint and
+    the true cost of pinning one more expert layer, which beats the GGUF-derived
+    estimate (that one cannot know what the loader skips, e.g. vision towers).
+    """
+    import json
+    import re
+
+    rows = json.load(open(results_path))
+    pts = {}
+    for r in rows:
+        if r.get("error") or not r.get("gpu_model_mib"):
+            continue
+        m = re.match(r"ncmoe(\d+)_", r["label"])
+        if m:
+            pts[int(m.group(1))] = float(r["gpu_model_mib"])
+    if len(pts) < 2:
+        return None
+    xs = sorted(pts)
+    # least squares on (n_gpu_layers -> MiB); n_gpu_layers = n_total - n_cpu_moe
+    n_total = max(xs)  # ncmoe == n_total means zero expert layers on GPU
+    X = [n_total - x for x in xs]
+    Y = [pts[x] for x in xs]
+    mx, my = sum(X) / len(X), sum(Y) / len(Y)
+    var = sum((x - mx) ** 2 for x in X) or 1.0
+    slope = sum((x - mx) * (y - my) for x, y in zip(X, Y)) / var
+    fixed = my - slope * mx
+    return {"fixed_mib": fixed, "per_layer_mib": slope, "points": pts}
+
+
+def max_gpu_layers(cal: dict, vram_mib: int, headroom_mib: int, kv_mib: float, compute_mib: float) -> int:
+    free = vram_mib - headroom_mib - kv_mib - compute_mib - cal["fixed_mib"]
+    return max(0, int(free // max(cal["per_layer_mib"], 1.0)))

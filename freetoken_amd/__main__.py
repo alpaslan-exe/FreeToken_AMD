@@ -13,7 +13,7 @@ from .bench import PROMPTS, best, fmt_row, gpu_power_always_on, guard_ollama, lo
 from .config import Settings
 from .gguf import human, read_gguf
 from .hw import describe, probe
-from .plan import candidate_n_cpu_moe, make_plan
+from .plan import calibrate, candidate_n_cpu_moe, make_plan, max_gpu_layers
 from .report import render
 from .serve import load_best, serve, systemd_unit
 from .server import ServerConfig
@@ -62,6 +62,16 @@ def cmd_plan(args) -> int:
     print(plan.describe())
     print(f"llama-server args: {' '.join(plan.llama_args())}")
     print(f"grid ladder for --n-cpu-moe: {candidate_n_cpu_moe(plan)}")
+    if args.calibrate:
+        cal = calibrate(args.calibrate)
+        if not cal:
+            print("calibration: not enough measured points in that results file")
+            return 0
+        n = max_gpu_layers(cal, vram, args.headroom_mib, plan.kv_bytes / 2**20, plan.compute_reserve_bytes / 2**20)
+        n_layers = len(plan.expert_layer_bytes)
+        print(f"calibrated from {args.calibrate}: fixed {cal['fixed_mib']:.0f} MiB on GPU + {cal['per_layer_mib']:.0f} MiB per expert layer "
+              f"(points: {cal['points']})")
+        print(f"=> with {args.headroom_mib} MiB headroom: up to {n} expert layer(s) on GPU -> --n-cpu-moe {max(0, n_layers - n)}")
     return 0
 
 
@@ -183,6 +193,8 @@ def main(argv=None) -> int:
     sp = sub.add_parser("plan", parents=[common], help="read the GGUF and propose expert placement")
     sp.add_argument("--vram-mib", type=int)
     sp.add_argument("--kv-bytes", type=float, default=1.0, help="bytes/elem of KV cache (1.0 q8_0, 2.0 f16)")
+    sp.add_argument("--calibrate", help="bench JSON: fit real GPU bytes (fixed + per expert layer) from measured runs")
+    sp.add_argument("--headroom-mib", type=int, default=700)
     sp.set_defaults(fn=cmd_plan)
 
     sp = sub.add_parser("bench", parents=[common], help="benchmark a grid of placements and spec-decode modes")
