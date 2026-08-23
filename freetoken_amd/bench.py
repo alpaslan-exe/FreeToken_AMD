@@ -57,6 +57,34 @@ def _timings(resp: dict) -> dict:
     return {k: t.get(k) for k in keys}
 
 
+def load_results(path: str) -> list["RunResult"]:
+    rows = json.load(open(path))
+    out = []
+    for r in rows:
+        out.append(RunResult(label=r["label"], args=r["args"], ctx=r["ctx"], ready_seconds=r["ready_seconds"],
+                             gpu_model_mib=r.get("gpu_model_mib"), host_model_mib=r.get("host_model_mib"),
+                             offloaded=r.get("offloaded"), prompts=r.get("prompts", {}), error=r.get("error")))
+    return out
+
+
+def gpu_power_always_on() -> None:
+    """Keep amdgpu out of runtime suspend while benchmarking.
+
+    On headless AMD cards the driver can runtime-suspend the GPU (BACO/D3cold)
+    between requests; resume races mid-inference have hard-hung machines. The
+    durable fix is `amdgpu.runpm=0` on the kernel command line; this just flips
+    the sysfs knob for the current boot when we are allowed to.
+    """
+    import glob
+    for p in glob.glob("/sys/class/drm/card*/device/power/control"):
+        try:
+            if open(p).read().strip() != "on" and os.access(p, os.W_OK):
+                open(p, "w").write("on")
+                print(f"set {p} = on (amdgpu runtime PM disabled for this boot)")
+        except OSError:
+            pass
+
+
 def guard_ollama(allow_resident: bool = False) -> None:
     resident = ollama_resident()
     if resident and not allow_resident:

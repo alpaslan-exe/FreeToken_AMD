@@ -9,7 +9,7 @@ import sys
 import time
 
 from . import __version__
-from .bench import PROMPTS, best, fmt_row, guard_ollama, run_config, save_results
+from .bench import PROMPTS, best, fmt_row, gpu_power_always_on, guard_ollama, load_results, run_config, save_results
 from .config import Settings
 from .gguf import human, read_gguf
 from .hw import describe, probe
@@ -96,16 +96,38 @@ def cmd_bench(args) -> int:
     vram = args.vram_mib or (gpus[0].total_mib if gpus else 0)
     plan = make_plan(info, vram, s.ctx)
     ladder = [int(x) for x in args.n_cpu_moe.split(",")] if args.n_cpu_moe else candidate_n_cpu_moe(plan)
+    ladder = sorted(ladder, reverse=True)  # most experts on CPU first: safest configs produce data first
+    if vram and not args.no_vram_guard:
+        per_layer = sorted(plan.expert_layer_bytes.values())
+        headroom = args.vram_headroom_mib * 1024 * 1024
+        keep = []
+        for n in ladder:
+            est = plan.non_expert_bytes + plan.kv_bytes + plan.compute_reserve_bytes + sum(per_layer[n:])
+            if est + headroom <= vram * 1024 * 1024:
+                keep.append(n)
+            else:
+                print(f"skip --n-cpu-moe {n}: est. {est / 2**20:.0f} MiB + {args.vram_headroom_mib} MiB headroom > {vram} MiB VRAM "
+                      f"(RADV starts paging VRAM over PCIe near the limit; that both tanks speed and has hung this class of box)")
+        ladder = keep
     cfgs = _grid(args, ladder)
     if args.fit_baseline:
         cfgs.insert(0, ServerConfig(label="fit_default", args=["--fit", "on", *args.extra]))
     os.makedirs(s.results_dir, exist_ok=True)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    out = os.path.join(s.results_dir, f"bench-{stamp}.json")
+    results = []
+    if args.resume:
+        out = args.resume
+        stamp = os.path.basename(out)[6:-5]
+        results = load_results(out)
+        done = {r.label for r in results}
+        cfgs = [c for c in cfgs if c.label not in done]
+        print(f"resuming {out}: {len(results)} done, {len(cfgs)} to go")
+    else:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        out = os.path.join(s.results_dir, f"bench-{stamp}.json")
     log_dir = os.path.join(s.results_dir, f"logs-{stamp}")
     os.makedirs(log_dir, exist_ok=True)
+    gpu_power_always_on()
     print(f"{len(cfgs)} configurations; model {os.path.basename(s.model)}; ctx {s.ctx}; results -> {out}")
-    results = []
     for i, cfg in enumerate(cfgs, 1):
         print(f"[{i}/{len(cfgs)}] {cfg.label} ...", flush=True)
         r = run_config(s, cfg, log_dir)
@@ -170,6 +192,9 @@ def main(argv=None) -> int:
     sp.add_argument("--vram-mib", type=int)
     sp.add_argument("--fit-baseline", action="store_true", help="also run llama-server's own --fit on")
     sp.add_argument("--allow-resident", action="store_true", help="do not abort when ollama holds models")
+    sp.add_argument("--resume", help="bench JSON to continue (skips configs already recorded)")
+    sp.add_argument("--vram-headroom-mib", type=int, default=700, help="skip placements estimated closer than this to full VRAM")
+    sp.add_argument("--no-vram-guard", action="store_true")
     sp.add_argument("extra", nargs=argparse.REMAINDER, help="extra llama-server args after --")
     sp.set_defaults(fn=cmd_bench)
 
