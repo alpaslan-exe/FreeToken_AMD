@@ -89,15 +89,19 @@ class LlamaServer:
             return json.loads(r.read())
 
     def stop(self) -> None:
+        """Shut down gently: SIGINT first so llama-server tears its Vulkan context down
+        itself; escalate only if it does not exit. Abrupt kills of a process holding
+        GPU buffers are exactly the moment amdgpu resets go wrong on some cards."""
         if self.proc and self.proc.poll() is None:
-            try:
-                os.killpg(self.proc.pid, signal.SIGTERM)
-                self.proc.wait(timeout=20)
-            except (ProcessLookupError, subprocess.TimeoutExpired):
+            for sig, grace in ((signal.SIGINT, 60), (signal.SIGTERM, 30), (signal.SIGKILL, 10)):
                 try:
-                    os.killpg(self.proc.pid, signal.SIGKILL)
+                    os.killpg(self.proc.pid, sig)
+                    self.proc.wait(timeout=grace)
+                    break
                 except ProcessLookupError:
-                    pass
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
         self.proc = None
 
     def tail(self, n: int = 15) -> str:

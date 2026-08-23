@@ -92,9 +92,24 @@ def guard_ollama(allow_resident: bool = False) -> None:
                  f"Run `ollama stop <model>` or pass --allow-resident.")
 
 
+def wait_for_ollama_idle(max_wait_s: int = 1200, poll_s: int = 30) -> None:
+    """Block while Ollama holds models: two processes sharing an 8 GB card is how you get
+    VRAM thrash (and, on this class of box, hangs). We never evict the user's models;
+    we wait for keep-alive to expire."""
+    waited = 0
+    while waited < max_wait_s:
+        resident = ollama_resident()
+        if not resident:
+            return
+        print(f"   ollama has {', '.join(resident)} resident; waiting for it to unload ({waited}s)...", flush=True)
+        time.sleep(poll_s)
+        waited += poll_s
+
+
 def run_config(settings: Settings, cfg: ServerConfig, log_dir: str, prompts: dict | None = None,
-               warmup: bool = True) -> RunResult:
+               warmup: bool = True, settle_s: float = 10.0) -> RunResult:
     prompts = prompts or PROMPTS
+    wait_for_ollama_idle()
     log_path = os.path.join(log_dir, f"{cfg.label}.log")
     srv = LlamaServer(settings, cfg, log_path)
     res = RunResult(label=cfg.label, args=cfg.args, ctx=cfg.ctx or settings.ctx, ready_seconds=0.0,
@@ -112,7 +127,7 @@ def run_config(settings: Settings, cfg: ServerConfig, log_dir: str, prompts: dic
         res.error = f"{type(exc).__name__}: {exc}"[:2000]
     finally:
         srv.stop()
-        time.sleep(2)
+        time.sleep(settle_s)  # let the driver fully release the previous context before the next load
     return res
 
 
