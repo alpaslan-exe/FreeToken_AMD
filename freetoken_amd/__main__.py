@@ -154,9 +154,15 @@ def cmd_bench(args) -> int:
 def cmd_serve(args) -> int:
     s = _settings(args)
     if args.from_results:
-        cfg = load_best(args.from_results)
+        cfg = load_best(args.from_results, cache=not args.no_cache)
     else:
-        cfg = ServerConfig(label="manual", args=args.extra)
+        extra = list(args.extra)
+        if not args.no_cache and "--cache-reuse" not in extra:
+            extra += ["--cache-reuse", "256"]
+        cfg = ServerConfig(label="manual", args=extra)
+    if args.slot_save_dir:
+        os.makedirs(args.slot_save_dir, exist_ok=True)
+        cfg.args += ["--slot-save-path", args.slot_save_dir]
     if not s.model:
         sys.exit("--model (or FTA_MODEL) is required")
     os.makedirs(s.results_dir, exist_ok=True)

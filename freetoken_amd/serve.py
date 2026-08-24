@@ -11,13 +11,26 @@ from .config import Settings
 from .server import LlamaServer, ServerConfig
 
 
-def load_best(path: str) -> ServerConfig:
+# FreeToken keeps recurrent state at semantic boundaries so later turns reuse
+# earlier compute. llama-server's nearest equivalents, all safe to always-on:
+#   --cache-reuse N   reuse cached KV even when the prefix SHIFTS (agent history
+#                     grows/truncates), in >=N-token chunks, via KV shifting
+#   --slot-save-path  persist per-slot KV so a reconnecting client resumes
+#                     without recomputing its prefix
+# Prompt caching itself is already on by default (cache_prompt in requests).
+CACHE_ARGS = ["--cache-reuse", "256"]
+
+
+def load_best(path: str, cache: bool = True) -> ServerConfig:
     data = json.load(open(path))
     rows = [r for r in data if not r.get("error") and r.get("decode_tps")]
     if not rows:
         sys.exit(f"no successful runs in {path}")
     r = max(rows, key=lambda r: r["decode_tps"])
-    return ServerConfig(label=r["label"], args=r["args"], ctx=r.get("ctx"))
+    args = list(r["args"])
+    if cache and "--cache-reuse" not in args:
+        args += CACHE_ARGS
+    return ServerConfig(label=r["label"], args=args, ctx=r.get("ctx"))
 
 
 def serve(settings: Settings, cfg: ServerConfig, log_path: str) -> int:
