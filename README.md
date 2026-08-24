@@ -65,6 +65,8 @@ python3 -m freetoken_amd probe        # GPU seen by llama-server, VRAM, CPU flag
 python3 -m freetoken_amd plan         # read the GGUF, estimate what fits, propose --n-cpu-moe
 python3 -m freetoken_amd bench        # grid: placement x spec-decode x threads; JSON + table
 python3 -m freetoken_amd serve --from-results results/bench-<stamp>.json   # OpenAI API on 127.0.0.1:18436
+# best measured config directly (Qwen3.6-35B on 8GB W5500):
+#   python3 -m freetoken_amd serve -- --n-gpu-layers 999 --n-cpu-moe 34 -t 12 --spec-type draft-mtp --spec-draft-n-max 2
 python3 -m freetoken_amd systemd --from-results results/bench-<stamp>.json --user alp   # prints a unit, does not install it
 ```
 
@@ -75,7 +77,44 @@ proxy in front for LAN use.
 
 ## Results
 
-_(filled in from the benchmark harness; see `results/`)_
+Hardware: **AMD Radeon Pro W5500** (Navi 14 / RDNA1, 8 GB, Vulkan/RADV) · Xeon
+E5-1650 v2 (6c/12t Ivy Bridge-EP, **no AVX2**) · 48 GB DDR3-1066 quad-rank ECC.
+Model: **Qwen3.6-35B-A3B** (Q4_K/Q6_K GGUF, 35B total / ~3B active, 40 MoE layers,
+256 experts top-8), 32K context. Numbers from `freetoken_amd bench` (llama-server
+`/completion` timings; decode = mean of a prose + a code prompt).
+
+| config | decode tok/s | prefill tok/s | notes |
+| --- | --- | --- | --- |
+| llama-server `--fit on` (auto) | 6.4 | 163 | baseline, no expert-placement control |
+| best static placement, no spec | 8.3 | 194 | `--n-cpu-moe 32` |
+| **best overall** | **8.9** | 106 | `--n-cpu-moe 34` + MTP draft (n-max 2), 41% accept |
+
+MTP speculative decoding is the biggest single lever (+15–20% decode). The
+expert-placement sweet spot is 6 expert layers on the GPU (`--n-cpu-moe 34`);
+pinning *more* experts is not monotonically faster once the MTP draft context
+also needs VRAM.
+
+### Honest comparison to FreeToken
+
+FreeToken reports **Qwen3.6-35B at 39 tok/s on an 8 GB RTX 4060**. This tool gets
+**~9 tok/s** on an 8 GB W5500 with the same model class. The ~4× gap is hardware,
+not method, and is not closable on this box:
+
+- **No dynamic in-VRAM expert cache.** FreeToken's core trick is an LRU cache of
+  hot experts that follows routing at run time. llama.cpp fixes tensor placement
+  at load, so this tool can only do *static* placement — the single biggest
+  difference.
+- **Memory bandwidth.** Expert weights stream from system RAM every token; this
+  box's DDR3-1066 (quad-rank, 2 of 4 channels) delivers ~12 GB/s measured vs the
+  DDR5 + PCIe4 FreeToken's rigs use. Decode here is bandwidth-bound.
+- **CPU expert kernels.** FreeToken uses AVX-512/AMX; this Xeon has only AVX.
+- **Vulkan vs CUDA.** No CUDA-graph capture; RADV on RDNA1.
+
+What this tool *does* reproduce from FreeToken, using llama.cpp primitives:
+GPU-resident attention + host-resident experts, filling spare VRAM with experts,
+speculative decoding across turns (MTP), and cross-turn KV reuse. See the parity
+table at the top of this README.
+
 
 ## Credits
 
