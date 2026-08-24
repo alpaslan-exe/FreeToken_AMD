@@ -144,3 +144,18 @@ All the heavy lifting at run time is done by [llama.cpp](https://github.com/ggml
 ## License
 
 Apache-2.0, same as FreeToken. See [LICENSE](LICENSE).
+
+### Negative result: expert requantization does not help on this hardware
+
+Hypothesis: requantizing Qwen3.6-35B's experts Q4/Q6 → **Q2_K** (18.5 GB → ~10 GB)
+would fit 3× more experts in VRAM and halve the bytes streamed per token, raising
+decode. Result: **decode barely moved (8.87 → 9.00 tok/s) and prefill dropped
+(106 → 69 tok/s)**, with worse quality.
+
+Conclusion: on a CPU without AVX2, decode here is **compute-bound on CPU expert
+dequant, not memory-bandwidth-bound** — and Q2_K is *more* expensive to dequant
+per element than Q4_K, so cutting the streamed bytes bought nothing. No
+quantization trick makes a >8 GB MoE interactive on this box. The usable-speed
+regime is **models that fit entirely in the 8 GB of VRAM** (measured on this box:
+granite4:tiny-h 6.9B @ 81 tok/s, qwen2.5-coder:3b @ 64 tok/s), where nothing
+streams — vs 4–11 tok/s for anything that spills to system RAM.
